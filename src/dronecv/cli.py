@@ -11,7 +11,7 @@ from pathlib import Path
 def _cmd_scout(args: argparse.Namespace) -> int:
     from .scout import scan
 
-    rows = scan(args.roots, target_hz=args.hz)
+    rows = scan(args.roots, target_hz=args.hz, check_exposure=args.check_exposure)
     if args.json:
         print(json.dumps([r.as_dict() for r in rows], indent=2))
         return 0
@@ -20,13 +20,23 @@ def _cmd_scout(args: argparse.Namespace) -> int:
         print("no telemetry (.SRT) found under the given roots", file=sys.stderr)
         return 1
 
-    hdr = f"{'score':>5} {'iso':>5} {'sweep':>6} {'dur':>6} {'rad':>5} {'alt':>5}  {'when':16}  {'clip':30} verdict"
+    dark_col = args.check_exposure
+    hdr = (
+        f"{'score':>5} {'iso':>5} {'sweep':>6} {'dur':>6} {'rad':>5} {'alt':>5}"
+        + (f" {'lum':>5} {'dark':>5}" if dark_col else "")
+        + f"  {'when':16}  {'clip':30} verdict"
+    )
     print(hdr)
     print("-" * len(hdr))
     for r in rows[: args.top]:
+        extra = ""
+        if dark_col:
+            lum = f"{r.brightness:5.0f}" if r.brightness >= 0 else "    -"
+            dk = f"{r.dark_fraction*100:4.0f}%" if r.dark_fraction >= 0 else "    -"
+            extra = f" {lum} {dk:>5}"
         print(
             f"{r.score:5.2f} {r.isotropy:5.2f} {r.sweep_deg:6.0f} {r.duration_s:6.0f} "
-            f"{r.radius_m:5.0f} {r.alt_m:5.0f}  {r.when:16}  {r.name[:30]:30} {r.verdict}"
+            f"{r.radius_m:5.0f} {r.alt_m:5.0f}{extra}  {r.when:16}  {r.name[:30]:30} {r.verdict}"
         )
     print(f"\n{len(rows)} flights scored.")
     print(
@@ -139,6 +149,10 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--top", type=int, default=15)
     s.add_argument("--hz", type=float, default=3.0, help="telemetry resample rate")
     s.add_argument("--json", action="store_true")
+    s.add_argument(
+        "--check-exposure", action="store_true",
+        help="also decode a few frames per clip to catch footage too dark to match",
+    )
     s.set_defaults(func=_cmd_scout)
 
     e = sub.add_parser("extract", help="extract sharp frames for SfM")

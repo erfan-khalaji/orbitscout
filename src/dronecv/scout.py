@@ -40,6 +40,9 @@ class FlightScore:
     alt_m: float         # mean relative altitude
     alt_cv: float        # altitude stability
     hour: int            # local hour of capture, for a daylight guess
+    brightness: float    # mean luma 0-255 of sampled frames, -1 if not checked
+    dark_fraction: float # fraction of pixels near-black, -1 if not checked
+    texture: float       # mean Laplacian variance, -1 if not checked
     score: float         # 0..1 reconstruction suitability
     verdict: str
 
@@ -89,6 +92,78 @@ def _sweep_degrees(xy: list[tuple[float, float]]) -> float:
     return abs(math.degrees(total))
 
 
+def sample_exposure(video: Path, n: int = 5) -> tuple[float, float, float]:
+    """Mean luma, near-black fraction and texture energy from a few frames.
+
+    Telemetry says whether the camera *moved* usefully; it says nothing about
+    whether the sensor *saw* anything. A flight can trace a textbook orbit and
+    still fail to reconstruct because it was shot after sunset, when most of
+    the frame carries no matchable detail. Decoding a handful of frames is
+    cheap next to a failed reconstruction.
+    """
+    import subprocess
+    import tempfile
+
+    try:
+        import cv2
+    except ImportError:
+        return -1.0, -1.0, -1.0
+
+    # Input seeking (-ss before -i) jumps to the nearest keyframe and decodes
+    # one frame. ffmpeg's `thumbnail` filter would be more representative but
+    # decodes the clip sequentially, which on 4K footage costs more time than
+    # the failed reconstruction this check exists to avoid.
+    try:
+        dur = float(
+            subprocess.run(
+                ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                 "-of", "csv=p=0", str(video)],
+                capture_output=True, text=True, check=True, timeout=30,
+            ).stdout.strip()
+        )
+    except Exception:
+        return -1.0, -1.0, -1.0
+
+    lums, darks, texs = [], [], []
+    with tempfile.TemporaryDirectory() as td:
+        for i in range(n):
+            t = dur * (i + 0.5) / n
+            out = f"{td}/s_{i:02d}.jpg"
+            try:
+                subprocess.run(
+                    ["ffmpeg", "-v", "error", "-nostdin", "-ss", f"{t:.2f}",
+                     "-i", str(video), "-frames:v", "1",
+                     "-vf", "scale=640:-2", out],
+                    check=True, capture_output=True, timeout=30,
+                )
+            except Exception:
+                continue
+            img = cv2.imread(out)
+            if img is None:
+                continue
+            g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            lums.append(float(g.mean()))
+            darks.append(float((g < 40).mean()))
+            texs.append(float(cv2.Laplacian(g, cv2.CV_64F).var()))
+
+    if not lums:
+        return -1.0, -1.0, -1.0
+    return (
+        sum(lums) / len(lums),
+        sum(darks) / len(darks),
+        sum(texs) / len(texs),
+    )
+
+
+def _find_video(srt: Path) -> Path | None:
+    """The .MP4 sitting beside a .SRT, if present."""
+    for ext in (".MP4", ".mp4", ".MOV", ".mov"):
+        cand = srt.with_suffix(ext)
+        if cand.exists():
+            return cand
+    return None
+
+
 def _cv(vals: list[float]) -> float:
     """Coefficient of variation; 9.0 sentinel when the mean is degenerate."""
     if not vals:
@@ -100,7 +175,12 @@ def _cv(vals: list[float]) -> float:
     return sd / abs(m)
 
 
-def score_flight(tel: Telemetry, target_hz: float = 3.0, fps: float = 30.0) -> FlightScore | None:
+def score_flight(
+    tel: Telemetry,
+    target_hz: float = 3.0,
+    fps: float = 30.0,
+    check_exposure: bool = False,
+) -> FlightScore | None:
     """Score one parsed flight. Returns None if telemetry is too thin to judge."""
     if len(tel.fixed) < 60:
         return None
@@ -142,6 +222,12 @@ def score_flight(tel: Telemetry, target_hz: float = 3.0, fps: float = 30.0) -> F
     f_baseline = min(radius / 15.0, 1.0)
     score = f_iso * f_steady * f_travel * f_baseline
 
+    brightness = dark_frac = texture = -1.0
+    if check_exposure:
+        vid = _find_video(tel.path)
+        if vid:
+            brightness, dark_frac, texture = sample_exposure(vid)
+
     if score >= 0.30:
         verdict = "STRONG - full orbit, reconstructable"
     elif score >= 0.15:
@@ -150,6 +236,14 @@ def score_flight(tel: Telemetry, target_hz: float = 3.0, fps: float = 30.0) -> F
         verdict = "DOLLY - straight pass, 2.5D only"
     else:
         verdict = "WEAK - insufficient parallax"
+
+    # Geometry is necessary but not sufficient. Measured on a failed
+    # after-sunset flight, 53% of pixels were near-black and SfM registered
+    # 13% of frames into four disconnected fragments; a daylight orbit of the
+    # same duration registered 76% into one. Darkness overrides a good path.
+    if dark_frac >= 0.0 and (dark_frac > 0.35 or brightness < 60):
+        verdict = f"TOO DARK - {dark_frac*100:.0f}% near-black, matching will fail"
+        score *= 0.15
 
     return FlightScore(
         name=tel.path.stem,
@@ -166,12 +260,17 @@ def score_flight(tel: Telemetry, target_hz: float = 3.0, fps: float = 30.0) -> F
         alt_m=round(alt_mean, 1),
         alt_cv=round(_cv(alts) if alts else 9.0, 3),
         hour=hour,
+        brightness=round(brightness, 1),
+        dark_fraction=round(dark_frac, 3),
+        texture=round(texture, 1),
         score=round(score, 4),
         verdict=verdict,
     )
 
 
-def scan(roots: list[str | Path], target_hz: float = 3.0) -> list[FlightScore]:
+def scan(
+    roots: list[str | Path], target_hz: float = 3.0, check_exposure: bool = False
+) -> list[FlightScore]:
     """Score every .SRT found under the given roots, best first."""
     out: list[FlightScore] = []
     seen: set[Path] = set()
@@ -184,7 +283,9 @@ def scan(roots: list[str | Path], target_hz: float = 3.0) -> list[FlightScore]:
                 continue
             seen.add(rp)
             try:
-                fs = score_flight(parse_srt(srt), target_hz=target_hz)
+                fs = score_flight(
+                    parse_srt(srt), target_hz=target_hz, check_exposure=check_exposure
+                )
             except Exception:
                 continue
             if fs:

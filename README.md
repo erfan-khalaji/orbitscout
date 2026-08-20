@@ -59,12 +59,18 @@ orbitscout depth flight.MP4 out/ --encoder vits
 orbitscout parallax out/frames out/depth out/parallax.mp4 --pattern orbit
 ```
 
+Add `--check-exposure` to also decode a few frames per clip. Geometry says
+whether the camera *moved* usefully; it says nothing about whether the sensor
+*saw* anything, and a textbook orbit shot after sunset still will not match.
+
 `scout` verdicts:
 
 - `STRONG` — full orbit, feed it to SfM + Gaussian splatting
 - `USABLE` — partial arc, expect gaps on the unseen side
 - `DOLLY` — straight pass, no orbital parallax; 2.5D depth is the honest ceiling
 - `WEAK` — insufficient baseline
+- `TOO DARK` — too little matchable detail regardless of the flight path
+  (needs `--check-exposure`)
 
 ## Measured results
 
@@ -107,6 +113,19 @@ temporal flicker 0.0026 after stabilisation; near/far displacement ratio
 **14.2x**, rising monotonically with disparity (0.89 -> 1.29 -> 2.54 px across
 disparity terciles), which is the signature of real parallax rather than a
 global pan.
+
+**Geometry is necessary, not sufficient.** A post-sunset flight was scored
+`DOLLY` on its path, and reconstruction was attempted anyway to test the
+prediction. It failed, but harder than the path alone predicted: 18 of 140
+frames registered into four disconnected fragments, 82 points in the largest.
+Measured cause, 53% of pixels near-black against 6.8% for a daylight orbit
+that registered 76% of frames into one component. Exposure is now a first-class
+check, and it cleanly separates the two populations:
+
+| flight | dark pixels | outcome |
+|---|---|---|
+| daylight orbits (4 clips) | 4–14% | all reconstructed |
+| after-sunset flight (4 clips) | 51–54% | all failed |
 
 ## The thing that is easy to get wrong twice
 
