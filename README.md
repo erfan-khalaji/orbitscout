@@ -94,6 +94,14 @@ never an input to the solve:
 
 Vision-only geometry and GPS independently agree to about 1% of track extent.
 
+**Gaussian splatting** — 121 views, 7000 iterations, seeded from the SfM points:
+
+| | |
+|---|---|
+| final gaussians | 76,625 (from 20,082 seeds) |
+| final PSNR | **29.58** |
+| peak VRAM | **0.51 GB** |
+
 **Depth + parallax** — 214-frame sunset clip, Depth Anything V2 Small:
 temporal flicker 0.0026 after stabilisation; near/far displacement ratio
 **14.2x**, rising monotonically with disparity (0.89 -> 1.29 -> 2.54 px across
@@ -110,9 +118,17 @@ number hides a bad geometry.
 **Largest component is not best component.** COLMAP's incremental mapper
 splits a flight into components, and taking the biggest by image count is the
 obvious move. On the bridge orbit that gave 121 images and 20k points — and
-only **4 degrees** of angular coverage, because the scene centroid was
+only **18.7 degrees** of angular coverage, because the scene centroid was
 dominated by a skyline 264 m away, so a 104 m flight subtended almost nothing
-around it. A separate 33-image component held 347 degrees of real coverage.
+around it. A separate 33-image component held **234.9 degrees**:
+
+| component | images | points | angular coverage |
+|---|---|---|---|
+| 3 | 121 | 20,082 | 18.7° |
+| 2 | 33 | 5,497 | **234.9°** |
+| 1 | 12 | 13 | 54.0° |
+| 0 | 2 | 912 | 0.0° |
+
 `sfm_report.json` now lists coverage per component so the choice is explicit.
 
 The practical consequence: a synthetic orbit only renders cleanly when the
