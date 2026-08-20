@@ -21,6 +21,50 @@ from pathlib import Path
 import pycolmap
 
 
+def _component_stats(rec) -> dict:
+    """Per-component geometry summary, including angular coverage.
+
+    Angular coverage is the arc the cameras span as seen from the scene
+    centroid. Near 360 means the capture genuinely surrounded the subject and
+    a synthetic orbit will render cleanly; a handful of degrees means the
+    component is effectively forward-facing, and novel views must stay close
+    to the original trajectory.
+    """
+    import numpy as np
+
+    centers = []
+    for img in rec.images.values():
+        rigid = img.cam_from_world() if callable(getattr(img, "cam_from_world", None)) else img.cam_from_world
+        R = np.asarray(rigid.rotation.matrix())
+        t = np.asarray(rigid.translation).reshape(3)
+        centers.append(-R.T @ t)
+    if len(centers) < 2 or not rec.points3D:
+        return {"images": len(centers), "points": len(rec.points3D),
+                "angular_coverage_deg": 0.0, "mean_distance": 0.0}
+
+    C = np.stack(centers)
+    xyz = np.array([p.xyz for p in rec.points3D.values()])
+    lo, hi = np.percentile(xyz, [5, 95], axis=0)
+    core = xyz[np.all((xyz >= lo) & (xyz <= hi), axis=1)]
+    target = core.mean(axis=0) if len(core) > 50 else xyz.mean(axis=0)
+
+    d = C - target
+    # Project onto the plane perpendicular to the dominant camera-spread normal.
+    _, _, Vt = np.linalg.svd(C - C.mean(axis=0), full_matrices=False)
+    n = Vt[2]
+    proj = d - np.outer(d @ n, n)
+    e0 = Vt[0] - np.dot(Vt[0], n) * n
+    e0 /= max(np.linalg.norm(e0), 1e-9)
+    e1 = np.cross(n, e0)
+    ang = np.arctan2(proj @ e1, proj @ e0)
+    return {
+        "images": len(C),
+        "points": len(rec.points3D),
+        "angular_coverage_deg": round(float(np.degrees(ang.max() - ang.min())), 1),
+        "mean_distance": round(float(np.linalg.norm(d, axis=1).mean()), 3),
+    }
+
+
 def run_sfm(
     image_dir: str | Path,
     out_dir: str | Path,
@@ -80,8 +124,13 @@ def run_sfm(
             "match_strategy": strategy,
         }
 
-    # incremental_mapping can return several disconnected components; the
-    # largest is the real one.
+    # incremental_mapping often returns several disconnected components, and
+    # "largest" is not the same as "most useful". On a drone orbit of a distant
+    # subject the biggest component is routinely a near-collinear run of frames
+    # covering only a few degrees around the scene, while a smaller component
+    # holds the part that actually swept around it. Angular coverage is
+    # reported per component so that choice can be made deliberately.
+    stats = {k: _component_stats(r) for k, r in recons.items()}
     best_id = max(recons, key=lambda k: recons[k].num_reg_images())
     rec = recons[best_id]
 
@@ -100,6 +149,9 @@ def run_sfm(
         "mean_reproj_error_px": round(sum(errs) / len(errs), 4) if errs else None,
         "mean_track_length": round(sum(track_lens) / len(track_lens), 2) if track_lens else None,
         "n_components": len(recons),
+        "components": {
+            str(k): v for k, v in sorted(stats.items(), key=lambda kv: -kv[1]["images"])
+        },
         "match_strategy": strategy,
         "model_dir": str(sparse / str(best_id)),
         "ply": str(ply),

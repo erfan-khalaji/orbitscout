@@ -100,6 +100,26 @@ temporal flicker 0.0026 after stabilisation; near/far displacement ratio
 disparity terciles), which is the signature of real parallax rather than a
 global pan.
 
+## The thing that is easy to get wrong twice
+
+Both mistakes this pipeline is built to avoid are cases where a plausible
+number hides a bad geometry.
+
+**Sweep says orbit, isotropy says dolly.** Covered above.
+
+**Largest component is not best component.** COLMAP's incremental mapper
+splits a flight into components, and taking the biggest by image count is the
+obvious move. On the bridge orbit that gave 121 images and 20k points — and
+only **4 degrees** of angular coverage, because the scene centroid was
+dominated by a skyline 264 m away, so a 104 m flight subtended almost nothing
+around it. A separate 33-image component held 347 degrees of real coverage.
+`sfm_report.json` now lists coverage per component so the choice is explicit.
+
+The practical consequence: a synthetic orbit only renders cleanly when the
+capture actually surrounded the subject. Otherwise use `render_follow`, which
+flies a smoothed, laterally-offset version of the real trajectory — novel
+views, but inside the region the splat was supervised on.
+
 ## Design notes
 
 **Frame extraction** oversamples and keeps the sharpest frame per temporal

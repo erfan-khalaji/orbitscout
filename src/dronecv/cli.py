@@ -107,13 +107,22 @@ def _cmd_splat(args: argparse.Namespace) -> int:
 
 
 def _cmd_render(args: argparse.Namespace) -> int:
-    from .render import render_path
+    if args.path == "follow":
+        from .render import render_follow
 
-    out = render_path(
-        args.ply, args.model, args.out,
-        n_frames=args.n_frames, fps=args.fps,
-        radius_scale=args.radius, turns=args.turns, downscale=args.downscale,
-    )
+        out = render_follow(
+            args.ply, args.model, args.out,
+            n_frames=args.n_frames, fps=args.fps,
+            offset=args.offset, downscale=args.downscale,
+        )
+    else:
+        from .render import render_path
+
+        out = render_path(
+            args.ply, args.model, args.out,
+            n_frames=args.n_frames, fps=args.fps,
+            radius_scale=args.radius, turns=args.turns, downscale=args.downscale,
+        )
     print(out)
     return 0
 
@@ -186,6 +195,12 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--radius", type=float, default=0.85)
     r.add_argument("--turns", type=float, default=1.0)
     r.add_argument("--downscale", type=float, default=1.0)
+    r.add_argument("--offset", type=float, default=0.07, help="follow: lateral offset")
+    r.add_argument(
+        "--path", default="follow", choices=["follow", "orbit"],
+        help="follow the real trajectory (safe) or synthesise an orbit "
+             "(only for captures that genuinely surrounded the subject)",
+    )
     r.set_defaults(func=_cmd_render)
 
     args = p.parse_args(argv)
