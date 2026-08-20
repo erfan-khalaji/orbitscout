@@ -38,7 +38,7 @@ def _component_stats(rec) -> dict:
         R = np.asarray(rigid.rotation.matrix())
         t = np.asarray(rigid.translation).reshape(3)
         centers.append(-R.T @ t)
-    if len(centers) < 2 or not rec.points3D:
+    if len(centers) < 3 or not rec.points3D:
         return {"images": len(centers), "points": len(rec.points3D),
                 "angular_coverage_deg": 0.0, "mean_distance": 0.0}
 
@@ -50,7 +50,9 @@ def _component_stats(rec) -> dict:
 
     d = C - target
     # Project onto the plane perpendicular to the dominant camera-spread normal.
-    _, _, Vt = np.linalg.svd(C - C.mean(axis=0), full_matrices=False)
+    # full_matrices=True so Vt is always 3x3: with fewer cameras than dimensions
+    # the economy SVD returns too few rows and there is no third basis vector.
+    _, _, Vt = np.linalg.svd(C - C.mean(axis=0), full_matrices=True)
     n = Vt[2]
     proj = d - np.outer(d @ n, n)
     e0 = Vt[0] - np.dot(Vt[0], n) * n
