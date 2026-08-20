@@ -106,6 +106,18 @@ def _cmd_splat(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_render(args: argparse.Namespace) -> int:
+    from .render import render_path
+
+    out = render_path(
+        args.ply, args.model, args.out,
+        n_frames=args.n_frames, fps=args.fps,
+        radius_scale=args.radius, turns=args.turns, downscale=args.downscale,
+    )
+    print(out)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         prog="orbitscout",
@@ -164,6 +176,17 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--iters", type=int, default=7000)
     g.add_argument("--sh-degree", type=int, default=3)
     g.set_defaults(func=_cmd_splat)
+
+    r = sub.add_parser("render", help="fly a new camera through a trained splat")
+    r.add_argument("ply")
+    r.add_argument("model", help="COLMAP sparse model dir (defines the capture frame)")
+    r.add_argument("out")
+    r.add_argument("--n-frames", type=int, default=240)
+    r.add_argument("--fps", type=float, default=30.0)
+    r.add_argument("--radius", type=float, default=0.85)
+    r.add_argument("--turns", type=float, default=1.0)
+    r.add_argument("--downscale", type=float, default=1.0)
+    r.set_defaults(func=_cmd_render)
 
     args = p.parse_args(argv)
     return args.func(args)

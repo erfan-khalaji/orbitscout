@@ -46,10 +46,11 @@ def _forward_warp(
     dx: float,
     dy: float,
     zoom: float,
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Push every source pixel to its destination, nearest-wins.
 
-    Returns the warped image and a validity mask (1 where a pixel landed).
+    Returns the warped image, a validity mask (1 where a pixel landed), and the
+    warped disparity -- the last is what lets hole filling prefer background.
     """
     _, H, W = rgb.shape
     dev = rgb.device
@@ -83,28 +84,47 @@ def _forward_warp(
 
     out = torch.zeros((3, H * W), device=dev)
     mask = torch.zeros((H * W,), device=dev)
+    wdisp = torch.zeros((H * W,), device=dev)
     src = rgb.reshape(3, -1)[:, owns]
     out.scatter_(1, idx.unsqueeze(0).expand(3, -1), src)
     mask.scatter_(0, idx, torch.ones_like(idx, dtype=torch.float32))
+    wdisp.scatter_(0, idx, disp.reshape(-1)[owns])
 
-    return out.reshape(3, H, W), mask.reshape(H, W)
+    return out.reshape(3, H, W), mask.reshape(H, W), wdisp.reshape(H, W)
 
 
-def _fill_holes(img: torch.Tensor, mask: torch.Tensor, iters: int = 24) -> torch.Tensor:
-    """Fill disocclusions by iteratively pulling from valid neighbours.
+def _fill_holes(
+    img: torch.Tensor,
+    mask: torch.Tensor,
+    warped_disp: torch.Tensor | None = None,
+    iters: int = 24,
+) -> torch.Tensor:
+    """Fill disocclusions by iteratively pulling from valid *background* neighbours.
 
-    Disocclusions sit behind whatever moved, so background colour is the
-    correct filler. A blur-and-renormalise pull spreads valid colour inward a
-    ring per iteration, which is enough for the few-pixel gaps a small virtual
-    baseline opens. On a backlit treeline this reads as a soft edge rather
-    than the smeared streaks a naive stretch produces.
+    A disocclusion is background that was hidden behind a nearer object, so the
+    correct filler is background colour. Pulling from all valid neighbours
+    equally gets this wrong at exactly the place it is most visible: on a
+    backlit treeline the hole opens between dark foliage and bright sky, and an
+    unweighted pull drags dark foliage into the sky as a smear.
+
+    Weighting each donor by how far away it is (low disparity) biases the fill
+    toward background and keeps the silhouette edge clean.
     """
     k = 5
     pad = k // 2
     weight = torch.ones((1, 1, k, k), device=img.device) / (k * k)
 
+    if warped_disp is not None:
+        # Donor preference falls off sharply with nearness, so a foreground
+        # pixel adjacent to a hole contributes little against any background
+        # pixel in the same neighbourhood.
+        prior = torch.exp(-4.0 * warped_disp.clamp(0, 1))
+    else:
+        prior = torch.ones_like(mask)
+
     filled = img * mask
     m = mask.clone()
+    w = mask * prior
     for _ in range(iters):
         if m.min() > 0.5:
             break
@@ -112,15 +132,21 @@ def _fill_holes(img: torch.Tensor, mask: torch.Tensor, iters: int = 24) -> torch
         if holes.sum() == 0:
             break
         num = torch.nn.functional.conv2d(
-            (filled * m).unsqueeze(0), weight.expand(3, 1, k, k), padding=pad, groups=3
+            (filled * w).unsqueeze(0), weight.expand(3, 1, k, k), padding=pad, groups=3
         ).squeeze(0)
         den = torch.nn.functional.conv2d(
-            m.unsqueeze(0).unsqueeze(0), weight, padding=pad
+            w.unsqueeze(0).unsqueeze(0), weight, padding=pad
         ).squeeze(0).squeeze(0)
         valid = den > 1e-5
         upd = torch.where(valid.unsqueeze(0), num / den.clamp_min(1e-5), filled)
-        filled = torch.where((m < 0.5).unsqueeze(0), upd, filled)
+        newly = (m < 0.5) & valid
+        filled = torch.where(newly.unsqueeze(0), upd, filled)
+        # Newly filled pixels become donors, but at background weight so the
+        # fill keeps spreading background inward rather than re-importing
+        # foreground colour on the next ring.
         m = torch.where(valid, torch.ones_like(m), m)
+        w = torch.where(newly, den.clamp_min(1e-5) * 0 + prior.min(), w)
+        w = torch.where(mask > 0.5, mask * prior, w)
     return filled.clamp(0, 1)
 
 
@@ -188,16 +214,20 @@ def render_parallax(
         ox, oy, oz = _camera_offset(pattern, i / max(total, 1))
         px = amplitude * W
         try:
-            warped, mask = _forward_warp(rgb, disp, ox * px, oy * px, oz * amplitude * 0.6)
-            filled = _fill_holes(warped, mask)
+            warped, mask, wdisp = _forward_warp(
+                rgb, disp, ox * px, oy * px, oz * amplitude * 0.6
+            )
+            filled = _fill_holes(warped, mask, wdisp)
         except torch.OutOfMemoryError:
             # An 8 GB card is easily contended. Warping is cheap enough on CPU
             # that degrading beats failing a long render near the end.
             torch.cuda.empty_cache()
             rgb, disp = rgb.cpu(), disp.cpu()
             dev = torch.device("cpu")
-            warped, mask = _forward_warp(rgb, disp, ox * px, oy * px, oz * amplitude * 0.6)
-            filled = _fill_holes(warped, mask)
+            warped, mask, wdisp = _forward_warp(
+                rgb, disp, ox * px, oy * px, oz * amplitude * 0.6
+            )
+            filled = _fill_holes(warped, mask, wdisp)
 
         img = (filled.clamp(0, 1) * 255).byte().permute(1, 2, 0).cpu().numpy()[:, :, ::-1]
         if crop < 1.0:
