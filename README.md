@@ -66,6 +66,40 @@ orbitscout parallax out/frames out/depth out/parallax.mp4 --pattern orbit
 - `DOLLY` — straight pass, no orbital parallax; 2.5D depth is the honest ceiling
 - `WEAK` — insufficient baseline
 
+## Measured results
+
+Run against a 209 s drone orbit of a bridge pier (DJI Mini 4 Pro, 4K30), on an
+RTX 5060 Laptop with 8 GB of VRAM. Every number below came out of this repo.
+
+**Structure from motion** — 160 extracted frames at 1600x900, CPU SIFT:
+
+| | |
+|---|---|
+| registered | 121 / 160 (75.6%) |
+| 3D points | 20,082 |
+| mean reprojection error | **0.44 px** |
+| mean track length | 16.3 views |
+| wall clock | 2.2 min |
+
+**GPS cross-check** — the reconstruction validated against telemetry that was
+never an input to the solve:
+
+| | |
+|---|---|
+| frames aligned | 121 |
+| recovered metric scale | 12.247 model-units per metre |
+| mean residual | **1.17 m** |
+| median / p90 | 1.05 m / 2.15 m |
+| over a GPS track of | 104 m |
+
+Vision-only geometry and GPS independently agree to about 1% of track extent.
+
+**Depth + parallax** — 214-frame sunset clip, Depth Anything V2 Small:
+temporal flicker 0.0026 after stabilisation; near/far displacement ratio
+**14.2x**, rising monotonically with disparity (0.89 -> 1.29 -> 2.54 px across
+disparity terciles), which is the signature of real parallax rather than a
+global pan.
+
 ## Design notes
 
 **Frame extraction** oversamples and keeps the sharpest frame per temporal
