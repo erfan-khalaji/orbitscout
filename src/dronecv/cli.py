@@ -82,6 +82,30 @@ def _cmd_parallax(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_sfm(args: argparse.Namespace) -> int:
+    from .sfm import run_sfm
+
+    rep = run_sfm(
+        args.images,
+        args.out,
+        overlap=args.overlap,
+        quadratic=not args.no_quadratic,
+        max_features=args.max_features,
+        exhaustive=args.exhaustive,
+    )
+    print(json.dumps(rep, indent=2))
+    return 0 if rep.get("ok") else 1
+
+
+def _cmd_splat(args: argparse.Namespace) -> int:
+    from .splat import SplatConfig, train_splat
+
+    cfg = SplatConfig(iters=args.iters, sh_degree=args.sh_degree)
+    rep = train_splat(args.model, args.images, args.out, cfg=cfg)
+    print(json.dumps({k: v for k, v in rep.items() if k != "history"}, indent=2))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         prog="orbitscout",
@@ -123,6 +147,23 @@ def main(argv: list[str] | None = None) -> int:
     x.add_argument("--fps", type=float, default=30.0)
     x.add_argument("--pattern", default="orbit", choices=["orbit", "dolly", "sway"])
     x.set_defaults(func=_cmd_parallax)
+
+    f = sub.add_parser("sfm", help="structure-from-motion over extracted frames")
+    f.add_argument("images")
+    f.add_argument("out")
+    f.add_argument("--overlap", type=int, default=12)
+    f.add_argument("--no-quadratic", action="store_true")
+    f.add_argument("--max-features", type=int, default=8192)
+    f.add_argument("--exhaustive", action="store_true")
+    f.set_defaults(func=_cmd_sfm)
+
+    g = sub.add_parser("splat", help="train 3D gaussian splatting on a COLMAP model")
+    g.add_argument("model", help="COLMAP sparse model dir")
+    g.add_argument("images")
+    g.add_argument("out")
+    g.add_argument("--iters", type=int, default=7000)
+    g.add_argument("--sh-degree", type=int, default=3)
+    g.set_defaults(func=_cmd_splat)
 
     args = p.parse_args(argv)
     return args.func(args)

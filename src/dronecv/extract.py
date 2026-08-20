@@ -164,6 +164,7 @@ def extract(
     rot = info["rotation"]
 
     frame = None
+    manifest: list[dict] = []
     for s, _, cf in best:
         if s < floor:
             rejected += 1
@@ -181,12 +182,33 @@ def extract(
             sc = long_edge / max(h, w)
             frame = cv2.resize(frame, (round(w * sc), round(h * sc)), interpolation=cv2.INTER_AREA)
 
+        name = f"frame_{written:05d}.jpg"
         cv2.imwrite(
-            str(out_dir / f"frame_{written:05d}.jpg"),
+            str(out_dir / name),
             frame,
             [int(cv2.IMWRITE_JPEG_QUALITY), 100 - quality * 3],
         )
+        # Candidate k was emitted by ffmpeg at t = start + k / cand_fps, so the
+        # source timestamp is recoverable -- which is what lets SfM poses be
+        # cross-checked against GPS telemetry later.
+        k = int(cf.stem.split("_")[-1]) - 1
+        manifest.append(
+            {
+                "frame": name,
+                "candidate": k,
+                "t": round(start + k / cand_fps, 4),
+                "sharpness": round(s, 2),
+            }
+        )
         written += 1
+
+    (out_dir / "manifest.json").write_text(
+        json.dumps(
+            {"video": str(video), "fps": info["fps"], "cand_fps": cand_fps,
+             "start": start, "end": end, "frames": manifest},
+            indent=2,
+        )
+    )
 
     shutil.rmtree(tmp, ignore_errors=True)
     final = frame.shape[:2] if frame is not None else (0, 0)
