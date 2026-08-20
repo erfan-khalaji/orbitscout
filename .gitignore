@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+out/
+data/
+weights/
+*.mp4
+*.MP4
+*.jpg
+*.png
+*.ply
+*.npz
+.uvcache/
