@@ -11,3 +11,9 @@ weights/
 *.ply
 *.npz
 .uvcache/
+
+# stray build/scratch artifacts
+target/
+*.log
+hd_frame.png
+hd_depth.png
